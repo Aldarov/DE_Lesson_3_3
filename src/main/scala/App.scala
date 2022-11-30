@@ -1,6 +1,7 @@
-import org.apache.spark.sql.functions.{col, from_unixtime, udf, unix_timestamp, when}
+import org.apache.spark.sql.functions.{col, from_unixtime, row_number, udf, unix_timestamp, when}
 import org.apache.spark.sql.{Row, SparkSession}
 import org.apache.spark.sql.types.{BooleanType, DateType, IntegerType, LongType, StringType, StructType}
+import org.apache.spark.sql.expressions.Window
 
 import java.sql.Date
 
@@ -43,7 +44,33 @@ object App {
 
     val df = spark.createDataFrame(spark.sparkContext.parallelize(data), schema)
 
+    val userStruct = new StructType()
+      .add("id", IntegerType)
+      .add("user_id", IntegerType)
+      .add("fio", StringType)
+      .add("birth_date", DateType)
+      .add("create_date", DateType)
+
+    val users = Seq(
+      Row(1, 1, "Иванов И.С.", Date.valueOf("1990-03-01"), Date.valueOf("2019-09-01")),
+      Row(2, 2, "Петров А.С.", Date.valueOf("1990-03-23"), Date.valueOf("2019-09-01")),
+      Row(3, 3, "Сидоров П.С.", Date.valueOf("1991-03-01"), Date.valueOf("2019-09-01")),
+      Row(4, 4, "Макарова С.С.", Date.valueOf("1993-06-01"), Date.valueOf("2019-09-01")),
+      Row(5, 5, "Сергеев И.С.", Date.valueOf("1994-07-01"), Date.valueOf("2019-09-01")),
+      Row(6, 6, "Матвеев А.С.", Date.valueOf("1990-04-11"), Date.valueOf("2019-09-01")),
+      Row(7, 7, "Николаев Р.Н.", Date.valueOf("1997-03-11"), Date.valueOf("2019-09-01")),
+      Row(8, 8, "Миронова С.А.", Date.valueOf("1999-03-21"), Date.valueOf("2019-09-01")),
+      Row(9, 9, "Чупкин М.М.", Date.valueOf("1997-03-11"), Date.valueOf("2019-09-01")),
+      Row(10, 10, "Васильев М.И.", Date.valueOf("1996-03-01"), Date.valueOf("2019-09-01")),
+      Row(11, 11, "Дагбаева П.Н.", Date.valueOf("1995-03-01"), Date.valueOf("2019-09-01")),
+      Row(12, 12, "Суворов А.С.", Date.valueOf("1994-03-01"), Date.valueOf("2019-09-01")),
+    )
+
+    val usersDF = spark.createDataFrame(spark.sparkContext.parallelize(users), userStruct)
+
     println()
+
+/*
     println("Топ-5 самых активных посетителей сайта:")
     df.groupBy("user_id").count()
       .sort(col("count").desc)
@@ -84,30 +111,6 @@ object App {
     .sort(col("count").desc)
     .show()
 
-    val schemaPersonalArea = new StructType()
-      .add("id", IntegerType)
-      .add("user_id", IntegerType)
-      .add("fio", StringType)
-      .add("birth_date", DateType)
-      .add("create_date", DateType)
-
-    val users = Seq(
-      Row(1, 1, "Иванов И.С.", Date.valueOf("1990-03-01"), Date.valueOf("2019-09-01")),
-      Row(2, 2, "Петров А.С.", Date.valueOf("1990-03-23"), Date.valueOf("2019-09-01")),
-      Row(3, 3, "Сидоров П.С.", Date.valueOf("1991-03-01"), Date.valueOf("2019-09-01")),
-      Row(4, 4, "Макарова С.С.", Date.valueOf("1993-06-01"), Date.valueOf("2019-09-01")),
-      Row(5, 5, "Сергеев И.С.", Date.valueOf("1994-07-01"), Date.valueOf("2019-09-01")),
-      Row(6, 6, "Матвеев А.С.", Date.valueOf("1990-04-11"), Date.valueOf("2019-09-01")),
-      Row(7, 7, "Николаев Р.Н.", Date.valueOf("1997-03-11"), Date.valueOf("2019-09-01")),
-      Row(8, 8, "Миронова С.А.", Date.valueOf("1999-03-21"), Date.valueOf("2019-09-01")),
-      Row(9, 9, "Чупкин М.М.", Date.valueOf("1997-03-11"), Date.valueOf("2019-09-01")),
-      Row(10, 10, "Васильев М.И.", Date.valueOf("1996-03-01"), Date.valueOf("2019-09-01")),
-      Row(11, 11, "Дагбаева П.Н.", Date.valueOf("1995-03-01"), Date.valueOf("2019-09-01")),
-      Row(12, 12, "Суворов А.С.", Date.valueOf("1994-03-01"), Date.valueOf("2019-09-01")),
-    )
-
-    val usersDF = spark.createDataFrame(spark.sparkContext.parallelize(users), schemaPersonalArea)
-
     println("Фамилии посетителей, которые читали хотя бы одну новость про спорт.")
     df.join(usersDF, df("user_id") === usersDF("user_id"), "inner")
       .filter(df("tag") === "sport")
@@ -121,7 +124,7 @@ object App {
       .groupBy("id", "fio").max("diff_visit_date")
       .sort(col("max(diff_visit_date)").desc)
       .show(2)
-
+*/
     println("Топ-5 страниц, которые чаще всего посещают мужчины и топ-5 страниц, которые посещают чаще женщины.")
 
     def calc_gender = (fio: String) => {
@@ -133,10 +136,14 @@ object App {
       }
     }
     val calc_gender_udf = udf(calc_gender)
-    usersDF.join(usersDF, df("user_id") === usersDF("user_id"), "inner")
+    df.join(usersDF, df("user_id") === usersDF("user_id"), "inner")
       .withColumn("gender", calc_gender_udf(col("fio")))
-      .groupBy("page_id", "gender").count()
-      .withColumn("max_cnt", max(col("count")))
+      .groupBy("gender", "page_id").count()
+      .withColumn("row_number",
+        row_number.over(Window.partitionBy("gender").orderBy(col("count").desc))
+      )
+      .filter("row_number < 6")
+      .select("gender", "page_id")
       .show()
   }
 }

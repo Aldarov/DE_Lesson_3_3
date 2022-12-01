@@ -1,4 +1,4 @@
-import org.apache.spark.sql.functions.{col, from_unixtime, row_number, udf, unix_timestamp, when}
+import org.apache.spark.sql.functions.{col, current_date, datediff, floor, from_unixtime, row_number, to_date, udf, unix_timestamp, when}
 import org.apache.spark.sql.{Row, SparkSession}
 import org.apache.spark.sql.types.{BooleanType, DateType, IntegerType, LongType, StringType, StructType}
 import org.apache.spark.sql.expressions.Window
@@ -6,6 +6,14 @@ import org.apache.spark.sql.expressions.Window
 import java.sql.Date
 
 object App {
+  def calc_gender = (fio: String) => {
+    val fullName = fio.split(" ")
+    if (fullName(0).takeRight(2) == "ов" || fullName(0).takeRight(2) == "ев" || fullName(0).takeRight(2) == "ин") {
+      "М"
+    } else {
+      "Ж"
+    }
+  }
 
   def main(array: Array[String]): Unit = {
     val spark = SparkSession.builder().master("local[1]")
@@ -14,32 +22,35 @@ object App {
 
     spark.sparkContext.setLogLevel("ERROR")
 
+    val calc_gender_udf = udf(calc_gender)
+
+/*
     val schema = new StructType()
       .add("user_id", IntegerType)
-      .add("timestamp", LongType)
+      .add("timestamp", IntegerType)
       .add("type", StringType)
       .add("page_id", IntegerType)
       .add("tag", StringType)
       .add("sign", BooleanType)
 
     val data = Seq(
-      Row(1, 1667257200l, "click", 101, "sport", false),
-      Row(1, 1667347200l, "scroll", 102, "business", false),
-      Row(2, 1667347200l, "move", 102, "business", true),
-      Row(3, 1667440800l, "click", 101, "sport", true),
-      Row(3, 1667444400l, "scroll", 102, "business", true),
-      Row(3, 1667448000l, "visit", 103, "politics", true),
-      Row(3, 1667444400l, "click", 104, "medic", true),
-      Row(4, 1667440800l, "move", 103, "politics", false),
-      Row(5, 1667462400l, "scroll", 104, "medic", true),
-      Row(6, 1667462400l, "visit", 105, "sport", true),
-      Row(7, 1667469600l, "click", 102, "business", true),
-      Row(8, 1667469600l, "visit", 103, "politics", true),
-      Row(9, 1667476800l, "scroll", 102, "business", true),
-      Row(10, 1667476800l, "click", 103, "politics", false),
-      Row(11, 1667484000l, "click", 103, "politics", true),
-      Row(12, 1667484000l, "move", 105, "sport", true),
-      Row(12, 1667491200l, "click", 106, "sport", true),
+      Row(1, 1667257200, "click", 101, "sport", false),
+      Row(1, 1667347200, "scroll", 102, "business", false),
+      Row(2, 1667347200, "move", 102, "business", true),
+      Row(3, 1667440800, "click", 101, "sport", true),
+      Row(3, 1667444400, "scroll", 102, "business", true),
+      Row(3, 1667448000, "visit", 103, "politics", true),
+      Row(3, 1667444400, "click", 104, "medic", true),
+      Row(4, 1667440800, "move", 103, "politics", false),
+      Row(5, 1667462400, "scroll", 104, "medic", true),
+      Row(6, 1667462400, "visit", 105, "sport", true),
+      Row(7, 1667469600, "click", 102, "business", true),
+      Row(8, 1667469600, "visit", 103, "politics", true),
+      Row(9, 1667476800, "scroll", 102, "business", true),
+      Row(10, 1667476800, "click", 103, "politics", false),
+      Row(11, 1667484000, "click", 103, "politics", true),
+      Row(12, 1667484000, "move", 105, "sport", true),
+      Row(12, 1667491200, "click", 106, "sport", true),
     )
 
     val df = spark.createDataFrame(spark.sparkContext.parallelize(data), schema)
@@ -70,7 +81,6 @@ object App {
 
     println()
 
-/*
     println("Топ-5 самых активных посетителей сайта:")
     df.groupBy("user_id").count()
       .sort(col("count").desc)
@@ -124,7 +134,7 @@ object App {
       .groupBy("id", "fio").max("diff_visit_date")
       .sort(col("max(diff_visit_date)").desc)
       .show(2)
-*/
+
     println("Топ-5 страниц, которые чаще всего посещают мужчины и топ-5 страниц, которые посещают чаще женщины.")
 
     def calc_gender = (fio: String) => {
@@ -135,7 +145,7 @@ object App {
         "Ж"
       }
     }
-    val calc_gender_udf = udf(calc_gender)
+
     df.join(usersDF, df("user_id") === usersDF("user_id"), "inner")
       .withColumn("gender", calc_gender_udf(col("fio")))
       .groupBy("gender", "page_id").count()
@@ -145,5 +155,78 @@ object App {
       .filter("row_number < 6")
       .select("gender", "page_id")
       .show()
+ */
+
+    val dfUserActivityPG = spark.read.format("jdbc")
+      .option("url", "jdbc:postgresql://localhost:5432/Test")
+      .option("dbtable", "user_activity")
+      .option("user", "postgres")
+      .option("password", "postgres")
+      .load()
+
+    val dfUsersPG = spark.read.format("jdbc")
+      .option("url", "jdbc:postgresql://localhost:5432/Test")
+      .option("dbtable", "users")
+      .option("user", "postgres")
+      .option("password", "postgres")
+      .load()
+
+    println("Витрина данных: ")
+    val dfMain = dfUserActivityPG.join(dfUsersPG, dfUserActivityPG("user_id") === dfUsersPG("user_id"), "inner")
+      .drop(dfUsersPG("user_id"))
+      .withColumn("age", floor(datediff(current_date(), col("birth_date"))/365))
+      .withColumn("gender", calc_gender_udf(col("fio")))
+      .withColumn("hour", from_unixtime(col("timestamp"), "HH").cast(IntegerType))
+      .withColumn("period",
+        when(col("hour") >= 0 && col("hour") < 4, "0-4")
+          .when(col("hour") >= 4 && col("hour") < 8, "4-8")
+          .when(col("hour") >= 8 && col("hour") < 12, "8-12")
+          .when(col("hour") >= 12 && col("hour") < 16, "12-16")
+          .when(col("hour") >= 16 && col("hour") < 20, "16-20")
+          .when(col("hour") >= 20 && col("hour") < 24, "20-24")
+      )
+    dfMain.show()
+
+    val dfFavoriteTheem = dfMain
+      .groupBy("user_id", "tag").count()
+      .withColumn("row_number",
+        row_number.over(Window.partitionBy("user_id").orderBy(col("count").desc))
+      )
+      .filter("row_number == 1")
+      .select(col("user_id"), col("tag").as("favoriteTheem"))
+
+    val dfFavoritePeriod = dfMain
+      .groupBy("user_id", "period").count()
+      .withColumn("row_number",
+        row_number.over(Window.partitionBy("user_id").orderBy(col("count").desc))
+      )
+      .filter("row_number == 1")
+      .select(col("user_id"), col("period").as("favoritePeriod"))
+
+    val dfDiffCreateVisit = dfMain
+      .groupBy("user_id", "create_date", "sign").max("timestamp")
+      .withColumn("max_timestamp", from_unixtime(col("max(timestamp)")).cast(DateType))
+      .withColumn("diffCreateVisit",
+        when(col("sign") === true, datediff(col("max_timestamp"), col("create_date")))
+        .otherwise(-1)
+      )
+      .select(col("user_id"), col("diffCreateVisit"))
+
+    val dfCountVisit = dfMain
+      .groupBy("user_id").count()
+      .withColumnRenamed("count", "countVisit")
+
+    val dfCountSession = dfMain
+      .withColumn("row_number",
+        row_number.over(Window.partitionBy("user_id").orderBy(col("timestamp")))
+      )
+//      .withColumn("diffLastVisit",
+//        when(col("sign") === true, datediff(col("max_timestamp"), col("create_date")))
+//          .otherwise(-1)
+//      )
+      .show()
+
+//    1667491200
+//    1667491500
   }
 }

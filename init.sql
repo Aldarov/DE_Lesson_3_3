@@ -75,3 +75,5 @@ insert into user_activity(user_id, timestamp, type, page_id, tag, sign)
 values(12, 1667484000, 'move', 105, 'sport', true);
 insert into user_activity(user_id, timestamp, type, page_id, tag, sign)
 values(12, 1667491200, 'click', 106, 'sport', true);
+insert into user_activity(user_id, timestamp, type, page_id, tag, sign)
+values(12, 1667491343, 'click', 102, 'business', true);

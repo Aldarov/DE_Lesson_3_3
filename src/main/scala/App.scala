@@ -2,6 +2,7 @@ import org.apache.spark.sql.functions.{col, current_date, datediff, floor, from_
 import org.apache.spark.sql.{Row, SparkSession}
 import org.apache.spark.sql.types.{BooleanType, DateType, IntegerType, LongType, StringType, StructType}
 import org.apache.spark.sql.expressions.Window
+import org.apache.spark.sql.functions._
 
 import java.sql.Date
 
@@ -24,7 +25,7 @@ object App {
 
     val calc_gender_udf = udf(calc_gender)
 
-/*
+
     val schema = new StructType()
       .add("user_id", IntegerType)
       .add("timestamp", IntegerType)
@@ -137,15 +138,6 @@ object App {
 
     println("Топ-5 страниц, которые чаще всего посещают мужчины и топ-5 страниц, которые посещают чаще женщины.")
 
-    def calc_gender = (fio: String) => {
-      val fullName = fio.split (" ")
-      if (fullName (0).takeRight (2) == "ов" || fullName (0).takeRight (2) == "ев" || fullName (0).takeRight (2) == "ин") {
-        "М"
-      } else {
-        "Ж"
-      }
-    }
-
     df.join(usersDF, df("user_id") === usersDF("user_id"), "inner")
       .withColumn("gender", calc_gender_udf(col("fio")))
       .groupBy("gender", "page_id").count()
@@ -155,7 +147,7 @@ object App {
       .filter("row_number < 6")
       .select("gender", "page_id")
       .show()
- */
+
 
     val dfUserActivityPG = spark.read.format("jdbc")
       .option("url", "jdbc:postgresql://localhost:5432/Test")
@@ -185,7 +177,6 @@ object App {
           .when(col("hour") >= 16 && col("hour") < 20, "16-20")
           .when(col("hour") >= 20 && col("hour") < 24, "20-24")
       )
-    dfMain.show()
 
     val dfFavoriteTheem = dfMain
       .groupBy("user_id", "tag").count()
@@ -216,15 +207,73 @@ object App {
       .groupBy("user_id").count()
       .withColumnRenamed("count", "countVisit")
 
-    val dfCountSession = dfMain
-      .withColumn("row_number",
+    val dfTemp1 = dfMain
+      .select(col("user_id"), col("timestamp"))
+      .withColumn("order_num",
         row_number.over(Window.partitionBy("user_id").orderBy(col("timestamp")))
       )
-//      .withColumn("diffLastVisit",
-//        when(col("sign") === true, datediff(col("max_timestamp"), col("create_date")))
-//          .otherwise(-1)
-//      )
-      .show()
+    val dfTemp2 = dfMain
+      .select(col("user_id"), col("timestamp"))
+      .withColumn("order_num",
+        row_number.over(Window.partitionBy("user_id").orderBy(col("timestamp")))
+      )
 
+    var prevUserId = 0
+    var sessionNum = 1
+    def getSession = (diffTime: Int, userId: Int) => {
+      if (userId == prevUserId) {
+        if (diffTime > 300) {
+          sessionNum = sessionNum + 1
+        }
+      } else {
+        sessionNum = 1
+      }
+      prevUserId = userId
+      sessionNum
+    }
+    val getSessionUdf = udf(getSession)
+
+    val dfSession = dfTemp1.alias("a")
+      .join(dfTemp2.alias("b"), dfTemp1("user_id") === dfTemp2("user_id") && dfTemp1("order_num") - 1 === (dfTemp2("order_num")), "left")
+      .select(col("a.user_id"), col("a.order_num"), col("a.timestamp"),
+        when(col("b.timestamp").isNull, col("a.timestamp")).otherwise(col("b.timestamp")).as("timestamp_start"),
+        col("a.timestamp").as("timestamp_end")
+      )
+      .select(col("a.user_id"), col("a.order_num"), col("a.timestamp"),
+        (col("timestamp_end") - col("timestamp_start")).as("diff_time")
+      )
+      .orderBy("a.user_id", "a.order_num")
+      .withColumn("session_num", getSessionUdf(col("diff_time"), col("user_id")))
+      .groupBy("user_id", "session_num").agg(
+          (max("timestamp") - min("timestamp")).as("length_session"),
+          count("timestamp").as("count_session_activity")
+        )
+      .groupBy("user_id").agg(
+          avg("length_session").as("avg_length_session"),
+          avg("count_session_activity").as("avg_count_session_activity")
+        )
+
+
+    val dfResult = dfMain.select("user_id", "fio", "age", "gender", "id", "sign").distinct()
+      .join(dfFavoriteTheem, Seq("user_id"), "left")
+      .join(dfFavoritePeriod, Seq("user_id"), "left")
+      .join(dfDiffCreateVisit, Seq("user_id"), "left")
+      .join(dfCountVisit, Seq("user_id"), "left")
+      .join(dfSession, Seq("user_id"), "left")
+      .select("user_id", "fio", "age", "gender", "favoriteTheem", "favoritePeriod", "id",
+        "diffCreateVisit", "countVisit", "avg_length_session", "avg_count_session_activity")
+
+    dfResult.show()
+
+    val countTargetAudience = (dfUsersPG.count() * 0.1).round.toInt
+
+    println("Целевая аудитория - это люди кот. имеют лк, с наибольшей разницей между созданием ЛК и датой последнего посещения," +
+      " с наибольшим кол-вом посещений, с наибольшей средней длиной сессии и средним кол-во активностей в рамках одной сессии")
+
+    dfResult
+      .filter("sign == true")
+      .orderBy(col("diffCreateVisit").desc, col("countVisit").desc,
+        col("avg_length_session").desc, col("avg_count_session_activity").desc)
+      .show(countTargetAudience)
   }
 }
